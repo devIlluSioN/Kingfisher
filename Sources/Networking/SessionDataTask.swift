@@ -145,7 +145,10 @@ public class SessionDataTask: @unchecked Sendable {
     func didReceiveData(_ data: Data) {
         lock.lock()
         defer { lock.unlock() }
-        _mutableData.append(data)
+        // Use concatenation instead of append to avoid copy-on-write assertion failures.
+        // This ensures a new Data instance is created, avoiding race conditions when
+        // mutableData property is accessed concurrently from other threads.
+        _mutableData = _mutableData + data
     }
     
     func didCollectMetrics(_ metrics: NetworkMetrics) {
