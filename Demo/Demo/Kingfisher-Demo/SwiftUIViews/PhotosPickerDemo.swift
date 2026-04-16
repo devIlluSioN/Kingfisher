@@ -1,9 +1,10 @@
 //
-//  Box.swift
+//  PhotosPickerDemo.swift
 //  Kingfisher
 //
-//  Created by Wei Wang on 2018/3/17.
-//  Copyright (c) 2019 Wei Wang <onevcat@gmail.com>
+//  Created by nuomi1 on 2026/1/7.
+//
+//  Copyright (c) 2026 Wei Wang <onevcat@gmail.com>
 //
 //  Permission is hereby granted, free of charge, to any person obtaining a copy
 //  of this software and associated documentation files (the "Software"), to deal
@@ -24,11 +25,44 @@
 //  THE SOFTWARE.
 
 import Foundation
+import Kingfisher
+import PhotosUI
+import SwiftUI
 
-class Box<T> {
-    var value: T
-    
-    init(_ value: T) {
-        self.value = value
+struct PhotosPickerDemo: View {
+    @State private var isPresented = false
+
+    var body: some View {
+        if #available(iOS 16.0, *) {
+            PhotosPickerRealDemo()
+        } else {
+            Button {
+                isPresented = true
+            } label: {
+                Text("Tap Me")
+            }
+            .alert(isPresented: $isPresented) {
+                Alert(title: Text("Warning!"), message: Text("Only supports iOS 16+"))
+            }
+        }
+    }
+}
+
+@available(iOS 16.0, *)
+private struct PhotosPickerRealDemo: View {
+    @State private var pickerItem: PhotosPickerItem?
+
+    var body: some View {
+        if let pickerItem {
+            KFImage
+                .dataProvider(PhotosPickerItemImageDataProvider(pickerItem: pickerItem))
+        }
+
+        PhotosPicker(
+            "Tap Me",
+            selection: $pickerItem,
+            matching: .images,
+            photoLibrary: .shared()
+        )
     }
 }

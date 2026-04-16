@@ -177,6 +177,53 @@ class KingfisherManagerTests: XCTestCase {
         }}}}}}
         waitForExpectations(timeout: 3, handler: nil)
     }
+
+    func testRetrieveImageOriginalCacheClaimsCachedButReturnsNoneShouldStillCallback() {
+        let exp = expectation(description: #function)
+
+        let uuid = UUID()
+        let originalCache = ImageCache(name: "test.original.\(uuid.uuidString)")
+        let targetCache = ImageCache(name: "test.target.\(uuid.uuidString)")
+
+        addTeardownBlock {
+            clearCaches([originalCache, targetCache])
+        }
+
+        let url = testURLs[0]
+        let key = url.cacheKey
+
+        stub(url, data: testImageData)
+
+        // Store invalid data as the "original" image. This makes `imageCachedType` report `.disk`,
+        // while `retrieveImage` returns `.none` due to deserialization failure.
+        do {
+            try originalCache.diskStorage.store(value: Data([0x01, 0x02, 0x03]), forKey: key)
+        } catch {
+            XCTFail("Failed to prepare original cache: \(error)")
+            return
+        }
+
+        XCTAssertTrue(
+            originalCache.imageCachedType(forKey: key, processorIdentifier: DefaultImageProcessor.default.identifier).cached
+        )
+
+        let p = RoundCornerImageProcessor(cornerRadius: 20)
+        manager.retrieveImage(
+            with: url,
+            options: [
+                .processor(p),
+                .originalCache(originalCache),
+                .targetCache(targetCache)
+            ]
+        ) { result in
+            // It should never hang without calling the completion handler.
+            XCTAssertNotNil(result.value?.image)
+            XCTAssertEqual(result.value?.cacheType, CacheType.none)
+            exp.fulfill()
+        }
+
+        waitForExpectations(timeout: 3, handler: nil)
+    }
     
     func testRetrieveImageForceRefresh() {
         let exp = expectation(description: #function)
@@ -555,25 +602,20 @@ class KingfisherManagerTests: XCTestCase {
     }
     
     func testFailingProcessOnDataProviderImage() {
+        let exp = expectation(description: #function)
         let provider = SimpleImageDataProvider(cacheKey: "key") { .success(testImageData) }
-        let called = ActorBox(false)
         let p = FailingProcessor()
         let options = [KingfisherOptionsInfoItem.processor(p), .processingQueue(.mainCurrentOrAsync)]
         _ = manager.retrieveImage(with: .provider(provider), options: options) { result in
-            Task {
-                await called.setValue(true)
-            }
             XCTAssertNotNil(result.error)
             if case .processorError(reason: .processingFailed(let processor, _)) = result.error! {
                 XCTAssertEqual(processor.identifier, p.identifier)
             } else {
                 XCTFail()
             }
+            exp.fulfill()
         }
-        Task {
-            let result = await called.value
-            XCTAssertTrue(result)
-        }
+        waitForExpectations(timeout: 3, handler: nil)
     }
     
     func testCacheOriginalImageWithOriginalCache() {
@@ -751,9 +793,16 @@ class KingfisherManagerTests: XCTestCase {
         self.manager.retrieveImage(with: url, options: [.processor(p)]) { result in
             XCTAssertNotNil(result.value?.image)
             XCTAssertEqual(result.value!.cacheType, .none)
+            
+            // `waitForCache` is enabled by default in test setup, so the processed image should already be cached to disk
+            // when the completion handler is called.
+            self.manager.cache.clearMemoryCache()
+            let cached = self.manager.cache.imageCachedType(forKey: url.cacheKey, processorIdentifier: p.identifier)
+            XCTAssertEqual(cached, .disk)
+
             exp.fulfill()
         }
-        waitForExpectations(timeout: 3, handler: nil)
+        waitForExpectations(timeout: 10, handler: nil)
     }
 
     func testImageShouldOnlyFromMemoryCacheOrRefreshCanBeGotFromMemory() {
@@ -841,20 +890,15 @@ class KingfisherManagerTests: XCTestCase {
         let url = testURLs[0]
         stub(url, data: testImageData)
         
-        let modifierCalled = ActorBox(false)
+        let modifierCalled = LockIsolated(false)
         let modifier = AnyImageModifier { image in
-            Task {
-                await modifierCalled.setValue(true)
-            }
+            modifierCalled.setValue(true)
             return image.withRenderingMode(.alwaysTemplate)
         }
         manager.retrieveImage(with: url, options: [.imageModifier(modifier)]) { result in
             XCTAssertEqual(result.value?.image.renderingMode, .alwaysTemplate)
-            Task {
-                let called = await modifierCalled.value
-                XCTAssertTrue(called)
-                exp.fulfill()
-            }
+            XCTAssertTrue(modifierCalled.value)
+            exp.fulfill()
         }
         waitForExpectations(timeout: 3, handler: nil)
     }
@@ -864,11 +908,9 @@ class KingfisherManagerTests: XCTestCase {
         let url = testURLs[0]
         stub(url, data: testImageData)
         
-        let modifierCalled = ActorBox(false)
+        let modifierCalled = LockIsolated(false)
         let modifier = AnyImageModifier { image in
-            Task {
-                await modifierCalled.setValue(true)
-            }
+            modifierCalled.setValue(true)
             return image.withRenderingMode(.alwaysTemplate)
         }
 
@@ -876,11 +918,8 @@ class KingfisherManagerTests: XCTestCase {
         manager.retrieveImage(with: url, options: [.imageModifier(modifier)]) { result in
             XCTAssertEqual(result.value?.cacheType, .memory)
             XCTAssertEqual(result.value?.image.renderingMode, .alwaysTemplate)
-            Task {
-                let called = await modifierCalled.value
-                XCTAssertTrue(called)
-                exp.fulfill()
-            }
+            XCTAssertTrue(modifierCalled.value)
+            exp.fulfill()
         }
         waitForExpectations(timeout: 3, handler: nil)
     }
@@ -890,11 +929,9 @@ class KingfisherManagerTests: XCTestCase {
         let url = testURLs[0]
         stub(url, data: testImageData)
 
-        let modifierCalled = ActorBox(false)
+        let modifierCalled = LockIsolated(false)
         let modifier = AnyImageModifier { image in
-            Task {
-                await modifierCalled.setValue(true)
-            }
+            modifierCalled.setValue(true)
             return image.withRenderingMode(.alwaysTemplate)
         }
 
@@ -903,10 +940,7 @@ class KingfisherManagerTests: XCTestCase {
             self.manager.retrieveImage(with: url, options: [.imageModifier(modifier)]) { result in
                 XCTAssertEqual(result.value!.cacheType, .disk)
                 XCTAssertEqual(result.value!.image.renderingMode, .alwaysTemplate)
-                Task {
-                    let result = await modifierCalled.value
-                    XCTAssertTrue(result)
-                }
+                XCTAssertTrue(modifierCalled.value)
                 exp.fulfill()
             }
         }
@@ -918,11 +952,9 @@ class KingfisherManagerTests: XCTestCase {
         let url = testURLs[0]
         stub(url, data: testImageData)
 
-        let modifierCalled = ActorBox(false)
+        let modifierCalled = LockIsolated(false)
         let modifier = AnyImageModifier { image in
-            Task {
-                await modifierCalled.setValue(true)
-            }
+            modifierCalled.setValue(true)
             return image.withRenderingMode(.alwaysTemplate)
         }
         manager.retrieveImage(with: url, options: [.imageModifier(modifier)]) { result in
@@ -935,12 +967,8 @@ class KingfisherManagerTests: XCTestCase {
             self.manager.cache.retrieveImageInDiskCache(forKey: url.absoluteString) { result in
                 XCTAssertNotNil(result.value!)
                 XCTAssertEqual(result.value??.renderingMode, .automatic)
-
-                Task {
-                    let result = await modifierCalled.value
-                    XCTAssertTrue(result)
-                    exp.fulfill()
-                }
+                XCTAssertTrue(modifierCalled.value)
+                exp.fulfill()
             }
         }
         
@@ -950,26 +978,21 @@ class KingfisherManagerTests: XCTestCase {
 #endif
     
     func testRetrieveWithImageProvider() {
+        let exp = expectation(description: #function)
         let provider = SimpleImageDataProvider(cacheKey: "key") { .success(testImageData) }
-        let called = ActorBox(false)
         manager.defaultOptions = .empty
         _ = manager.retrieveImage(with: .provider(provider), options: [.processingQueue(.mainCurrentOrAsync)]) {
             result in
             XCTAssertNotNil(result.value)
             XCTAssertTrue(result.value!.image.renderEqual(to: testImage))
-            Task {
-                await called.setValue(true)
-            }
+            exp.fulfill()
         }
-        Task {
-            let result = await called.value
-            XCTAssertTrue(result)
-        }
+        waitForExpectations(timeout: 3, handler: nil)
     }
     
     func testRetrieveWithImageProviderFail() {
+        let exp = expectation(description: #function)
         let provider = SimpleImageDataProvider(cacheKey: "key") { .failure(SimpleImageDataProvider.E()) }
-        let called = ActorBox(false)
         _ = manager.retrieveImage(with: .provider(provider)) { result in
             XCTAssertNotNil(result.error)
             if case .imageSettingError(reason: .dataProviderError(_, let error)) = result.error! {
@@ -977,14 +1000,9 @@ class KingfisherManagerTests: XCTestCase {
             } else {
                 XCTFail()
             }
-            Task {
-                await called.setValue(true)
-            }
+            exp.fulfill()
         }
-        Task {
-            let result = await called.value
-            XCTAssertTrue(result)
-        }
+        waitForExpectations(timeout: 3, handler: nil)
     }
 
     func testContextRemovingAlternativeSource() {
@@ -1088,24 +1106,18 @@ class KingfisherManagerTests: XCTestCase {
         let brokenURL = URL(string: "brokenurl")!
         stub(brokenURL, data: Data())
 
-        let downloadTaskUpdatedCount = ActorBox(0)
+        let downloadTaskUpdatedCount = LockIsolated(0)
         let task = manager.retrieveImage(
           with: .network(brokenURL),
           options: [.alternativeSources([.network(url)])],
           downloadTaskUpdated: { newTask in
-              Task {
-                  let value = await downloadTaskUpdatedCount.value + 1
-                  await downloadTaskUpdatedCount.setValue(value)
-              }
+              downloadTaskUpdatedCount.withValue { $0 += 1 }
               XCTAssertEqual(newTask?.sessionTask?.task.currentRequest?.url, url)
           })
         {
             result in
-            Task {
-                let result = await downloadTaskUpdatedCount.value
-                XCTAssertEqual(result, 1)
-                exp.fulfill()
-            }
+            XCTAssertEqual(downloadTaskUpdatedCount.value, 1)
+            exp.fulfill()
         }
 
         XCTAssertEqual(task?.sessionTask?.task.currentRequest?.url, brokenURL)
@@ -1141,7 +1153,7 @@ class KingfisherManagerTests: XCTestCase {
         let url = testURLs[0]
         let dataStub = delayedStub(url, data: testImageData)
         
-        let called = ActorBox(false)
+        let called = LockIsolated(false)
 
         let brokenURL = URL(string: "brokenurl")!
         stub(brokenURL, data: Data())
@@ -1152,9 +1164,7 @@ class KingfisherManagerTests: XCTestCase {
             downloadTaskUpdated: { newTask in
                 XCTAssertNotNil(newTask)
                 newTask?.cancel()
-                Task {
-                    await called.setValue(true)
-                }
+                called.setValue(true)
             }
         )
         {
@@ -1164,11 +1174,8 @@ class KingfisherManagerTests: XCTestCase {
 
             delay(0.3) {
                 _ = dataStub.go()
-                Task {
-                    let result = await called.value
-                    XCTAssertTrue(result)
-                    exp.fulfill()
-                }
+                XCTAssertTrue(called.value)
+                exp.fulfill()
             }
         }
         
@@ -1290,31 +1297,25 @@ class KingfisherManagerTests: XCTestCase {
         
         stub(url, data: testImageData)
         
-        let task = ActorBox<DownloadTask?>(nil)
-        
-        let called = ActorBox(false)
+        let task = LockIsolated<DownloadTask?>(nil)
+        let callbackCount = LockIsolated(0)
         
         let t: DownloadTask? = manager.retrieveImage(with: url) { result in
-            Task {
-                let calledResult = await called.value
-                XCTAssertFalse(calledResult)
-                XCTAssertNotNil(result.value?.image)
-                
-                if !calledResult {
-                    Task {
-                        await task.value?.cancel()
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        exp.fulfill()
-                    }
-                } else {
-                    XCTFail("Callback should not be invoked again.")
-                }
+            let count = callbackCount.withValue { value in
+                value += 1
+                return value
+            }
+
+            XCTAssertEqual(count, 1, "Callback should not be invoked again.")
+            XCTAssertNotNil(result.value?.image)
+
+            task.value?.cancel()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                exp.fulfill()
             }
         }
-        Task {
-            await task.setValue(t)
-        }
+
+        task.setValue(t)
         waitForExpectations(timeout: 3, handler: nil)
     }
 
@@ -1834,17 +1835,6 @@ struct SimpleImageDataProvider: ImageDataProvider, @unchecked Sendable {
     }
     
     struct E: Error {}
-}
-
-actor ActorBox<T> {
-    var value: T
-    init(_ value: T) {
-        self.value = value
-    }
-    
-    func setValue(_ value: T) {
-        self.value = value
-    }
 }
 
 actor ActorArray<Element> {

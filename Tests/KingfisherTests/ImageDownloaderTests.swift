@@ -145,28 +145,22 @@ class ImageDownloaderTests: XCTestCase {
 
     func testDownloadWithAsyncModifyingRequest() {
         let exp = expectation(description: #function)
+        let downloadTaskStarted = LockIsolated(false)
 
         let url = testURLs[0]
         stub(url, data: testImageData)
 
-        let downloadTaskCalled = ActorBox(false)
-
         let asyncModifier = AsyncURLModifier(url: url, onDownloadTaskStarted: { task in
             XCTAssertNotNil(task)
-            Task {
-                await downloadTaskCalled.setValue(true)
-            }
+            downloadTaskStarted.setValue(true)
         })
 
         let someURL = URL(string: "some_strange_url")!
         let task = downloader.downloadImage(with: someURL, options: [.requestModifier(asyncModifier)]) { result in
             XCTAssertNotNil(result.value)
             XCTAssertEqual(result.value?.url, url)
-            Task {
-                let result = await downloadTaskCalled.value
-                XCTAssertTrue(result)
-                exp.fulfill()
-            }
+            XCTAssertTrue(downloadTaskStarted.value)
+            exp.fulfill()
         }
         // The returned task is nil since the download is not starting immediately.
         XCTAssertFalse(task.isInitialized)
@@ -541,33 +535,28 @@ class ImageDownloaderTests: XCTestCase {
         waitForExpectations(timeout: 3, handler: nil)
     }
     
-#if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
-    func testModifierShouldOnlyApplyForFinalResultWhenDownload() {
-        let exp = expectation(description: #function)
+	#if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+	    func testModifierShouldOnlyApplyForFinalResultWhenDownload() {
+	        let exp = expectation(description: #function)
 
-        let url = testURLs[0]
-        stub(url, data: testImageData)
+	        let url = testURLs[0]
+	        stub(url, data: testImageData)
 
-        let modifierCalled = ActorBox(false)
-        let modifier = AnyImageModifier { image in
-            Task {
-                await modifierCalled.setValue(true)
-            }
-            return image.withRenderingMode(.alwaysTemplate)
-        }
+	        let modifierCalled = LockIsolated(false)
+	        let modifier = AnyImageModifier { image in
+	            modifierCalled.setValue(true)
+	            return image.withRenderingMode(.alwaysTemplate)
+	        }
 
-        downloader.downloadImage(with: url, options: [.imageModifier(modifier)]) { result in
-            XCTAssertEqual(result.value?.image.renderingMode, .automatic)
-            Task {
-                let called = await modifierCalled.value
-                XCTAssertFalse(called)
-                exp.fulfill()
-            }
-        }
+	        downloader.downloadImage(with: url, options: [.imageModifier(modifier)]) { result in
+	            XCTAssertEqual(result.value?.image.renderingMode, .automatic)
+	            XCTAssertFalse(modifierCalled.value)
+	            exp.fulfill()
+	        }
 
-        waitForExpectations(timeout: 3, handler: nil)
-    }
-#endif
+	        waitForExpectations(timeout: 3, handler: nil)
+	    }
+	#endif
     
     func testDownloadTaskTakePriorityOption() {
         let exp = expectation(description: #function)
@@ -692,8 +681,25 @@ class ImageDownloaderTests: XCTestCase {
         let url = testURLs[0]
         stub(url, data: testImageData)
 
-        let callbackLock = NSLock()
-        var callbackCount = 0
+        final class CallbackCounter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = 0
+
+            func increment() {
+                lock.lock()
+                value += 1
+                lock.unlock()
+            }
+
+            func read() -> Int {
+                lock.lock()
+                let current = value
+                lock.unlock()
+                return current
+            }
+        }
+
+        let callbackCounter = CallbackCounter()
         let expectedCount = 10
         exp.expectedFulfillmentCount = expectedCount
 
@@ -706,9 +712,7 @@ class ImageDownloaderTests: XCTestCase {
                     XCTAssertEqual(imageResult.url, url)
                     XCTAssertEqual(imageResult.originalData, testImageData)
 
-                    callbackLock.lock()
-                    callbackCount += 1
-                    callbackLock.unlock()
+                    callbackCounter.increment()
 
                     exp.fulfill()
 
@@ -721,9 +725,7 @@ class ImageDownloaderTests: XCTestCase {
 
         // Then
         waitForExpectations(timeout: 3) { _ in
-            callbackLock.lock()
-            let finalCount = callbackCount
-            callbackLock.unlock()
+            let finalCount = callbackCounter.read()
             XCTAssertEqual(finalCount, expectedCount, "All \(expectedCount) concurrent requests should receive callbacks")
         }
     }

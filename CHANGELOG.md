@@ -2,6 +2,53 @@
 
 -----
 
+## [8.8.1 - Fresh Cache](https://github.com/onevcat/Kingfisher/releases/tag/8.8.1) (2026-04-01)
+
+#### Fix
+* Fix stale disk cache retrieval for cancelled or superseded tasks. When rapidly scrolling through large collections, cancelled requests still performed expensive disk cache deserialization and memory promotion, causing excessive memory usage. A `CancellationToken` is now used to properly short-circuit stale disk cache work at multiple checkpoints. [#2497](https://github.com/onevcat/Kingfisher/pull/2497) [#2495](https://github.com/onevcat/Kingfisher/issues/2495) @onevcat @FaizanDurrani
+
+---
+
+## [8.8.0 - Background Relief](https://github.com/onevcat/Kingfisher/releases/tag/8.8.0) (2026-03-04)
+
+#### Add
+* Add `AnimatedImageView.purgeFrames(keepCurrentFrame:)` and opt-in `purgeFramesOnBackground` to reduce animated frame memory while app is backgrounded. [#2482](https://github.com/onevcat/Kingfisher/pull/2482) [#2445](https://github.com/onevcat/Kingfisher/issues/2445) @onevcat @Ceylo
+* Add `KFAnimatedImage.purgeFramesOnBackground(_:)` to expose background frame purging in SwiftUI. [#2484](https://github.com/onevcat/Kingfisher/pull/2484) @WZBbiao
+
+#### Fix
+* Fix missing completion callback when original cache reports cached but returns no image. [#2481](https://github.com/onevcat/Kingfisher/pull/2481) [#2472](https://github.com/onevcat/Kingfisher/issues/2472) @onevcat @hotngui
+* Fix `AnimatedImageView` deinit compatibility for older Swift 6 toolchains without isolated deinit support. [#2485](https://github.com/onevcat/Kingfisher/pull/2485) @onevcat
+* Apply `retryStrategy` in `ImagePrefetcher` load path so retry options also work during prefetching. [#2487](https://github.com/onevcat/Kingfisher/pull/2487) @TastyHeadphones
+* Fix non-Sendable `RetryDecision` capture warning in ImagePrefetcher retry flow under Swift 6 concurrency checks. [#2488](https://github.com/onevcat/Kingfisher/pull/2488) @onevcat
+
+---
+
+## [8.7.0 - Async Expedition](https://github.com/onevcat/Kingfisher/releases/tag/8.7.0) (2026-02-18)
+
+#### Add
+* Add opt-in async cache type check API `imageCachedTypeAsync` to avoid synchronous disk access on the calling thread. [#2480](https://github.com/onevcat/Kingfisher/pull/2480) [#2323](https://github.com/onevcat/Kingfisher/issues/2323) @onevcat @jotai-coder
+* Add optional `cacheKey` parameter for `PhotosPickerItemImageDataProvider` and `PHPickerResultImageDataProvider` for better cache control. [#2479](https://github.com/onevcat/Kingfisher/pull/2479) @onevcat
+* Support using an `OperationQueue` or equivalent interface in `CallbackQueue` for custom processing queue control. [#2474](https://github.com/onevcat/Kingfisher/pull/2474) @onevcat
+
+#### Fix
+* {"Fix"=>"stabilize cacheKey for PhotosPicker/PHPicker data providers. Now uses stored property with picker-provided identifier or falls back to a per-instance UUID. [#2478](https://github.com/onevcat/Kingfisher/pull/2478) @onevcat"}
+* Fix a race condition crash in `ImagePrefetcher.handleComplete` when iterating sources during concurrent mutation. [#2465](https://github.com/onevcat/Kingfisher/pull/2465) @erichoracek
+* Fix GIF disk cache losing animation when original data is missing. Now `DefaultCacheSerializer` prefers embedded GIF bytes over re-encoding to PNG. [#2454](https://github.com/onevcat/Kingfisher/pull/2454) [#2453](https://github.com/onevcat/Kingfisher/issues/2453) @onevcat @rztime
+* Fix a crash when accessing `KingfisherWrapper<UIApplication>.shared` in unit tests. [#2450](https://github.com/onevcat/Kingfisher/pull/2450) @maxchuquimia
+* Call async modifier start callback before resume to ensure proper callback timing. [#2462](https://github.com/onevcat/Kingfisher/pull/2462) @onevcat
+* Remove ActorBox and harden background task cleanup to fix Sendable/main actor issues. [#2459](https://github.com/onevcat/Kingfisher/pull/2459) @onevcat
+* Mark `ImagePrefetcher` callback types as `@Sendable` to fix Swift 6 concurrency warnings.
+* Deprecate SwiftUI `.onFailureImage` modifier in favor of `.onFailureView`. [#2451](https://github.com/onevcat/Kingfisher/pull/2451) [#2449](https://github.com/onevcat/Kingfisher/issues/2449) @onevcat @sagarrai21802
+
+---
+
+## [8.6.2 - High Fidelity](https://github.com/onevcat/Kingfisher/releases/tag/8.6.2) (2025-11-17)
+
+#### Fix
+* Improve macOS graphics context for high bit depth to support rendering 10-bit images. [#2448](https://github.com/onevcat/Kingfisher/pull/2448) [#2447](https://github.com/onevcat/Kingfisher/issues/2447) @onevcat @BobbyRohweder
+
+---
+
 ## [8.6.1 - Atomic](https://github.com/onevcat/Kingfisher/releases/tag/8.6.1) (2025-10-27)
 
 #### Fix

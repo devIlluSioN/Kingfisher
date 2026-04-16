@@ -303,7 +303,7 @@ public class KingfisherManager: @unchecked Sendable {
         options: KingfisherParsedOptionsInfo,
         downloadTaskUpdated: DownloadTaskUpdatedBlock? = nil,
         progressiveImageSetter: ((KFCrossPlatformImage?) -> Void)? = nil,
-        referenceTaskIdentifierChecker: (() -> Bool)? = nil,
+        referenceTaskIdentifierChecker: (@Sendable () -> Bool)? = nil,
         completionHandler: (@Sendable (Result<RetrieveImageResult, KingfisherError>) -> Void)?) -> DownloadTask?
     {
         var options = options
@@ -330,6 +330,7 @@ public class KingfisherManager: @unchecked Sendable {
             options.onDataReceived?.forEach {
                 $0.onShouldApply = checker
             }
+            options.sourceTaskIdentifierChecker = checker
         }
         
         let retrievingContext = RetrievingContext(options: options, originalSource: source)
@@ -339,7 +340,11 @@ public class KingfisherManager: @unchecked Sendable {
             retryContext: RetryContext?,
             downloadTaskUpdated: DownloadTaskUpdatedBlock?
         ) {
-            let newTask = self.retrieveImage(with: source, context: retrievingContext) { result in
+            let newTask = self.retrieveImage(
+                with: source,
+                context: retrievingContext,
+                downloadTaskUpdated: downloadTaskUpdated
+            ) { result in
                 handler(currentSource: source, retryContext: retryContext, result: result)
             }
             downloadTaskUpdated?(newTask)
@@ -388,6 +393,14 @@ public class KingfisherManager: @unchecked Sendable {
             case .success:
                 completionHandler?(result)
             case .failure(let error):
+                // `ImageCache` reports stale disk retrieval as `.none` at its public
+                // boundary. For manager-mediated loading paths, this checker preserves
+                // the stale semantics and prevents retry / alternative-source / fallback
+                // work for superseded requests.
+                if retrievingContext.options.isSourceTaskStale {
+                    completionHandler?(result)
+                    return
+                }
                 if let retryStrategy = retryStrategy {
                     let context = retryContext?.increaseRetryCount() ?? RetryContext(source: source, error: error)
                     retryStrategy.retry(context: context) { decision in
@@ -407,7 +420,8 @@ public class KingfisherManager: @unchecked Sendable {
 
         return retrieveImage(
             with: source,
-            context: retrievingContext)
+            context: retrievingContext,
+            downloadTaskUpdated: downloadTaskUpdated)
         {
             result in
             handler(currentSource: source, retryContext: nil, result: result)
@@ -418,6 +432,7 @@ public class KingfisherManager: @unchecked Sendable {
     private func retrieveImage(
         with source: Source,
         context: RetrievingContext<Source>,
+        downloadTaskUpdated: DownloadTaskUpdatedBlock?,
         completionHandler: (@Sendable (Result<RetrieveImageResult, KingfisherError>) -> Void)?) -> DownloadTask?
     {
         let options = context.options
@@ -431,6 +446,7 @@ public class KingfisherManager: @unchecked Sendable {
             let loadedFromCache = retrieveImageFromCache(
                 source: source,
                 context: context,
+                downloadTaskUpdated: downloadTaskUpdated,
                 completionHandler: completionHandler)
             
             if loadedFromCache {
@@ -617,6 +633,7 @@ public class KingfisherManager: @unchecked Sendable {
     func retrieveImageFromCache(
         source: Source,
         context: RetrievingContext<Source>,
+        downloadTaskUpdated: DownloadTaskUpdatedBlock?,
         completionHandler: (@Sendable (Result<RetrieveImageResult, KingfisherError>) -> Void)?) -> Bool
     {
         let options = context.options
@@ -715,7 +732,26 @@ public class KingfisherManager: @unchecked Sendable {
                 result.match(
                     onSuccess: { cacheResult in
                         guard let image = cacheResult.image else {
-                            assertionFailure("The image (under key: \(key) should be existing in the original cache.")
+                            // If the task is stale, report error instead of downloading.
+                            if options.isSourceTaskStale {
+                                let error = KingfisherError.cacheError(reason: .imageNotExisting(key: key))
+                                options.callbackQueue.execute { completionHandler?(.failure(error)) }
+                                return
+                            }
+
+                            // The original cache type check is not a strong guarantee. When it happens, treat it as a cache miss.
+                            // In this case, fall back to download or provider loading.
+                            if options.onlyFromCache {
+                                let error = KingfisherError.cacheError(reason: .imageNotExisting(key: key))
+                                options.callbackQueue.execute { completionHandler?(.failure(error)) }
+                            } else {
+                                let task = self.loadAndCacheImage(
+                                    source: source,
+                                    context: context,
+                                    completionHandler: completionHandler
+                                )
+                                downloadTaskUpdated?(task?.value)
+                            }
                             return
                         }
 
@@ -859,7 +895,7 @@ extension KingfisherManager {
         with source: Source,
         options: KingfisherParsedOptionsInfo,
         progressiveImageSetter: ((KFCrossPlatformImage?) -> Void)? = nil,
-        referenceTaskIdentifierChecker: (() -> Bool)? = nil
+        referenceTaskIdentifierChecker: (@Sendable () -> Bool)? = nil
     ) async throws -> RetrieveImageResult
     {
         // Early cancellation check

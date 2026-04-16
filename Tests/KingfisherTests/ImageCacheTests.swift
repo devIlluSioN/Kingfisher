@@ -201,6 +201,80 @@ class ImageCacheTests: XCTestCase {
         XCTAssertNotNil(result.image)
         XCTAssertEqual(result.cacheType, .memory)
     }
+
+    func testStoreGIFToDiskWithNilOriginalShouldPreserveGIFFormat() {
+        struct TestProcessor: ImageProcessor {
+            let identifier: String = "com.onevcat.KingfisherTests.TestProcessor"
+            func process(item: ImageProcessItem, options: KingfisherParsedOptionsInfo) -> KFCrossPlatformImage? {
+                switch item {
+                case .image(let image): return image
+                case .data(let data): return DefaultImageProcessor.default.process(item: .data(data), options: options)
+                }
+            }
+        }
+
+        let exp = expectation(description: #function)
+        let image = KingfisherWrapper<KFCrossPlatformImage>.animatedImage(data: testImageGIFData, options: .init())!
+        XCTAssertEqual(image.kf.gifRepresentation()?.kf.imageFormat, .GIF)
+
+        let options = KingfisherParsedOptionsInfo([.processor(TestProcessor())])
+        let key = "test-gif"
+        cache.store(image, original: nil, forKey: key, options: options, toDisk: true) { _ in
+            do {
+                let storedKey = key.computedKey(with: TestProcessor().identifier)
+                let storedData = try self.cache.diskStorage.value(forKey: storedKey)
+                XCTAssertEqual(storedData?.kf.imageFormat, .GIF)
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+            exp.fulfill()
+        }
+
+        waitForExpectations(timeout: 3, handler: nil)
+    }
+
+    func testCopyKingfisherStateShouldKeepEmbeddedGIFDataForDiskCache() {
+        struct TestProcessor: ImageProcessor {
+            let identifier: String = "com.onevcat.KingfisherTests.TestProcessor.CopyState"
+            func process(item: ImageProcessItem, options: KingfisherParsedOptionsInfo) -> KFCrossPlatformImage? {
+                switch item {
+                case .image(let image):
+                    #if os(macOS)
+                    guard let cgImage = image.kf.cgImage else { return image }
+                    let newImage = KFCrossPlatformImage(cgImage: cgImage, size: image.kf.size)
+                    image.kf.copyKingfisherState(to: newImage)
+                    return newImage
+                    #else
+                    guard let cgImage = image.cgImage else { return image }
+                    let newImage = KFCrossPlatformImage(cgImage: cgImage, scale: image.scale, orientation: image.imageOrientation)
+                    image.kf.copyKingfisherState(to: newImage)
+                    return newImage
+                    #endif
+                case .data(let data):
+                    return DefaultImageProcessor.default.process(item: .data(data), options: options)
+                }
+            }
+        }
+
+        let exp = expectation(description: #function)
+        let image = KingfisherWrapper<KFCrossPlatformImage>.animatedImage(data: testImageGIFData, options: .init())!
+        XCTAssertEqual(image.kf.gifRepresentation()?.kf.imageFormat, .GIF)
+
+        let options = KingfisherParsedOptionsInfo([.processor(TestProcessor())])
+        let key = "test-gif-copy-state"
+        cache.store(image, original: nil, forKey: key, options: options, toDisk: true) { _ in
+            do {
+                let storedKey = key.computedKey(with: TestProcessor().identifier)
+                let storedData = try self.cache.diskStorage.value(forKey: storedKey)
+                XCTAssertEqual(storedData?.kf.imageFormat, .GIF)
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+            exp.fulfill()
+        }
+
+        waitForExpectations(timeout: 3, handler: nil)
+    }
     
     func testStoreMultipleImages() {
         let exp = expectation(description: #function)
@@ -508,97 +582,80 @@ class ImageCacheTests: XCTestCase {
         waitForExpectations(timeout: 3, handler: nil)
     }
 
-#if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
-    func testModifierShouldOnlyApplyForFinalResultWhenMemoryLoad() {
-        let exp = expectation(description: #function)
-        let key = testKeys[0]
-        
-        let modifierCalled = ActorBox(false)
-        let modifier = AnyImageModifier { image in
-            Task {
-                await modifierCalled.setValue(true)
-            }
-            return image.withRenderingMode(.alwaysTemplate)
-        }
-        
-        cache.store(testImage, original: testImageData, forKey: key) { _ in
-            self.cache.retrieveImage(forKey: key, options: [.imageModifier(modifier)]) { result in
-                XCTAssertEqual(result.value?.image?.renderingMode, .automatic)
-                Task {
-                    let called = await modifierCalled.value
-                    XCTAssertFalse(called)
-                    exp.fulfill()
-                    
-                }
-            }
-        }
-        waitForExpectations(timeout: 3, handler: nil)
-    }
-    
-    func testModifierShouldOnlyApplyForFinalResultWhenMemoryLoadAsync() async throws {
-        let key = testKeys[0]
+	#if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+	    func testModifierShouldOnlyApplyForFinalResultWhenMemoryLoad() {
+	        let exp = expectation(description: #function)
+	        let key = testKeys[0]
+	        
+	        let modifierCalled = LockIsolated(false)
+	        let modifier = AnyImageModifier { image in
+	            modifierCalled.setValue(true)
+	            return image.withRenderingMode(.alwaysTemplate)
+	        }
+	        
+	        cache.store(testImage, original: testImageData, forKey: key) { _ in
+	            self.cache.retrieveImage(forKey: key, options: [.imageModifier(modifier)]) { result in
+	                XCTAssertEqual(result.value?.image?.renderingMode, .automatic)
+	                XCTAssertFalse(modifierCalled.value)
+	                exp.fulfill()
+	            }
+	        }
+	        waitForExpectations(timeout: 3, handler: nil)
+	    }
+	    
+	    func testModifierShouldOnlyApplyForFinalResultWhenMemoryLoadAsync() async throws {
+	        let key = testKeys[0]
 
-        let modifierCalled = ActorBox(false)
-        let modifier = AnyImageModifier { image in
-            Task {
-                await modifierCalled.setValue(true)
-            }
-            return image.withRenderingMode(.alwaysTemplate)
-        }
+	        let modifierCalled = LockIsolated(false)
+	        let modifier = AnyImageModifier { image in
+	            modifierCalled.setValue(true)
+	            return image.withRenderingMode(.alwaysTemplate)
+	        }
 
-        try await cache.store(testImage, original: testImageData, forKey: key)
-        let result = try await cache.retrieveImage(forKey: key, options: [.imageModifier(modifier)])
-        let called = await modifierCalled.value
-        XCTAssertFalse(called)
-        XCTAssertEqual(result.image?.renderingMode, .automatic)
-    }
+	        try await cache.store(testImage, original: testImageData, forKey: key)
+	        let result = try await cache.retrieveImage(forKey: key, options: [.imageModifier(modifier)])
+	        XCTAssertFalse(modifierCalled.value)
+	        XCTAssertEqual(result.image?.renderingMode, .automatic)
+	    }
 
-    func testModifierShouldOnlyApplyForFinalResultWhenDiskLoad() {
-        let exp = expectation(description: #function)
-        let key = testKeys[0]
+	    func testModifierShouldOnlyApplyForFinalResultWhenDiskLoad() {
+	        let exp = expectation(description: #function)
+	        let key = testKeys[0]
 
-        let modifierCalled = ActorBox(false)
-        let modifier = AnyImageModifier { image in
-            Task {
-                await modifierCalled.setValue(true)
-            }
-            return image.withRenderingMode(.alwaysTemplate)
-        }
+	        let modifierCalled = LockIsolated(false)
+	        let modifier = AnyImageModifier { image in
+	            modifierCalled.setValue(true)
+	            return image.withRenderingMode(.alwaysTemplate)
+	        }
 
-        cache.store(testImage, original: testImageData, forKey: key) { _ in
-            self.cache.clearMemoryCache()
-            self.cache.retrieveImage(forKey: key, options: [.imageModifier(modifier)]) { result in
-                XCTAssertEqual(result.value?.image?.renderingMode, .automatic)
-                Task {
-                    let called = await modifierCalled.value
-                    XCTAssertFalse(called)
-                    exp.fulfill()
-                }
-            }
-        }
-        waitForExpectations(timeout: 3, handler: nil)
-    }
-    
-    func testModifierShouldOnlyApplyForFinalResultWhenDiskLoadAsync() async throws {
-        let key = testKeys[0]
-        let modifierCalled = ActorBox(false)
-        let modifier = AnyImageModifier { image in
-            Task {
-                await modifierCalled.setValue(true)
-            }
-            return image.withRenderingMode(.alwaysTemplate)
-        }
-        
-        try await cache.store(testImage, original: testImageData, forKey: key)
-        cache.clearMemoryCache()
-        let result = try await cache.retrieveImage(forKey: key, options: [.imageModifier(modifier)])
-        let called = await modifierCalled.value
-        XCTAssertFalse(called)
-        // The renderingMode is expected to be the default value `.automatic`. The image modifier should only apply to
-        // the image manager result.
-        XCTAssertEqual(result.image?.renderingMode, .automatic)
-    }
-#endif
+	        cache.store(testImage, original: testImageData, forKey: key) { _ in
+	            self.cache.clearMemoryCache()
+	            self.cache.retrieveImage(forKey: key, options: [.imageModifier(modifier)]) { result in
+	                XCTAssertEqual(result.value?.image?.renderingMode, .automatic)
+	                XCTAssertFalse(modifierCalled.value)
+	                exp.fulfill()
+	            }
+	        }
+	        waitForExpectations(timeout: 3, handler: nil)
+	    }
+	    
+	    func testModifierShouldOnlyApplyForFinalResultWhenDiskLoadAsync() async throws {
+	        let key = testKeys[0]
+	        let modifierCalled = LockIsolated(false)
+	        let modifier = AnyImageModifier { image in
+	            modifierCalled.setValue(true)
+	            return image.withRenderingMode(.alwaysTemplate)
+	        }
+	        
+	        try await cache.store(testImage, original: testImageData, forKey: key)
+	        cache.clearMemoryCache()
+	        let result = try await cache.retrieveImage(forKey: key, options: [.imageModifier(modifier)])
+	        XCTAssertFalse(modifierCalled.value)
+	        // The renderingMode is expected to be the default value `.automatic`. The image modifier should only apply to
+	        // the image manager result.
+	        XCTAssertEqual(result.image?.renderingMode, .automatic)
+	    }
+	#endif
     
     func testStoreToMemoryWithExpiration() {
         let exp = expectation(description: #function)
@@ -895,7 +952,15 @@ class ImageCacheTests: XCTestCase {
         let result = try XCTUnwrap(fileURL)
         XCTAssertTrue(result.absoluteString.hasSuffix(".myExt"))
     }
-    
+
+#if !os(macOS) && !os(watchOS)
+    func testKingfisherWrapperUIApplicationSharedReturnsNilInUnitTest() {
+        // UIApplication.shared is not available in some Unit Tests contexts.
+        // This tests that accessing it via KingfisherWrapper does not cause a crash.
+        XCTAssertNil(KingfisherWrapper<UIApplication>.shared)
+    }
+#endif
+
     // MARK: - Helper
     private func storeMultipleImages(_ completionHandler: @escaping () -> Void) {
         let group = DispatchGroup()
@@ -993,6 +1058,96 @@ public final class LockIsolated<Value>: @unchecked Sendable {
       self._value = try newValue()
     }
   }
+}
+
+final class ImageCacheAsyncCachedTypeTests: XCTestCase {
+
+    var cache: ImageCache!
+
+    override func setUp() {
+        super.setUp()
+
+        let uuid = UUID().uuidString
+        cache = ImageCache(name: "test-\(uuid)")
+    }
+
+    override func tearDown() {
+        clearCaches([cache])
+        cache = nil
+
+        super.tearDown()
+    }
+
+    func testImageCachedTypeAsyncMemoryHit() {
+        let expectation = expectation(description: "memory hit")
+        let key = "memory-hit"
+        let computedKey = key.computedKey(with: DefaultImageProcessor.default.identifier)
+
+        cache.memoryStorage.store(value: testImage, forKey: computedKey)
+
+        cache.imageCachedTypeAsync(forKey: key, callbackQueue: .untouch) { type in
+            XCTAssertEqual(type, .memory)
+            XCTAssertTrue(Thread.isMainThread)
+            expectation.fulfill()
+        }
+
+        waitForExpectations(timeout: 2)
+    }
+
+    func testImageCachedTypeAsyncDiskHitRunsOffMainThreadWhenCallbackUntouch() {
+        let expectation = expectation(description: "disk hit")
+        let key = "disk-hit"
+        let computedKey = key.computedKey(with: DefaultImageProcessor.default.identifier)
+
+        try? cache.diskStorage.store(value: testImageData, forKey: computedKey, expiration: .never)
+
+        cache.imageCachedTypeAsync(forKey: key, callbackQueue: .untouch) { type in
+            XCTAssertEqual(type, .disk)
+            XCTAssertFalse(Thread.isMainThread)
+            expectation.fulfill()
+        }
+
+        waitForExpectations(timeout: 2)
+    }
+
+    func testImageCachedTypeAsyncNone() {
+        let expectation = expectation(description: "none")
+        let key = "missing"
+
+        cache.imageCachedTypeAsync(forKey: key, callbackQueue: .untouch) { type in
+            XCTAssertEqual(type, .none)
+            expectation.fulfill()
+        }
+
+        waitForExpectations(timeout: 2)
+    }
+
+    func testImageCachedTypeAsyncDeliversOnMainQueueWhenRequested() {
+        let expectation = expectation(description: "main callback")
+        let key = "main-callback"
+        let computedKey = key.computedKey(with: DefaultImageProcessor.default.identifier)
+
+        try? cache.diskStorage.store(value: testImageData, forKey: computedKey, expiration: .never)
+
+        DispatchQueue.global().async {
+            self.cache.imageCachedTypeAsync(forKey: key, callbackQueue: .mainAsync) { type in
+                XCTAssertEqual(type, .disk)
+                XCTAssertTrue(Thread.isMainThread)
+                expectation.fulfill()
+            }
+        }
+
+        waitForExpectations(timeout: 2)
+    }
+
+    func testImageCachedTypeAsyncAwaitReturns() async {
+        let key = "async-await"
+        let computedKey = key.computedKey(with: DefaultImageProcessor.default.identifier)
+        try? cache.diskStorage.store(value: testImageData, forKey: computedKey, expiration: .never)
+
+        let type = await cache.imageCachedTypeAsync(forKey: key)
+        XCTAssertEqual(type, .disk)
+    }
 }
 
 extension LockIsolated where Value: Sendable {
